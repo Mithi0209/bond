@@ -1,16 +1,42 @@
-import React, { createContext, useContext, useEffect, useMemo, useReducer } from 'react'
+import React, {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+} from 'react'
 import { addDaysISO, todayISO } from '../lib/date'
-import { loadData, saveData } from '../lib/storage'
-import type { AppData, FundEntry, ISODate, MaturityEntry, Trade } from '../lib/types'
+import { pullDataFromGitHub, pushDataToGitHub } from '../lib/githubSync'
+import {
+  loadData,
+  loadGitHubSyncConfig,
+  saveData,
+  saveGitHubSyncConfig,
+} from '../lib/storage'
+import type {
+  AppData,
+  FundEntry,
+  GitHubSyncConfig,
+  ISODate,
+  MaturityEntry,
+  SyncState,
+  Trade,
+} from '../lib/types'
 
 type AppState = {
   data: AppData
   selectedDate: ISODate
+  githubSyncConfig: GitHubSyncConfig
+  syncState: SyncState
 }
 
 type Action =
   | { type: 'SET_SELECTED_DATE'; date: ISODate }
   | { type: 'REPLACE_DATA'; data: AppData }
+  | { type: 'UPDATE_GITHUB_SYNC_CONFIG'; config: Partial<GitHubSyncConfig> }
+  | { type: 'SET_SYNC_STATE'; syncState: SyncState }
   | { type: 'ADD_FUND'; entry: FundEntry }
   | { type: 'UPDATE_FUND'; entry: FundEntry }
   | { type: 'DELETE_FUND'; id: string }
@@ -35,6 +61,13 @@ function reducer(state: AppState, action: Action): AppState {
       return { ...state, selectedDate: action.date }
     case 'REPLACE_DATA':
       return { ...state, data: action.data }
+    case 'UPDATE_GITHUB_SYNC_CONFIG':
+      return {
+        ...state,
+        githubSyncConfig: { ...state.githubSyncConfig, ...action.config },
+      }
+    case 'SET_SYNC_STATE':
+      return { ...state, syncState: action.syncState }
     case 'ADD_FUND':
     case 'UPDATE_FUND': {
       return {
@@ -93,6 +126,10 @@ type Store = {
   state: AppState
   setSelectedDate: (date: ISODate) => void
   replaceData: (data: AppData) => void
+  updateGitHubSyncConfig: (config: Partial<GitHubSyncConfig>) => void
+  pushToGitHub: () => Promise<void>
+  pullFromGitHub: () => Promise<void>
+  clearSyncMessage: () => void
 
   addFund: (input: { date: ISODate; amountInr: number; note?: string }) => void
   updateFund: (entry: FundEntry) => void
@@ -133,17 +170,124 @@ export function AppStoreProvider({ children }: { children: React.ReactNode }) {
   const [state, dispatch] = useReducer(reducer, {
     data: loadData(),
     selectedDate: todayISO(),
+    githubSyncConfig: loadGitHubSyncConfig(),
+    syncState: { status: 'idle', message: '' },
   })
+  const initialLoadRef = useRef(true)
+  const skipAutoSyncRef = useRef(false)
 
   useEffect(() => {
     saveData(state.data)
   }, [state.data])
+
+  useEffect(() => {
+    saveGitHubSyncConfig(state.githubSyncConfig)
+  }, [state.githubSyncConfig])
+
+  const pushNow = useCallback(
+    async (data: AppData = state.data) => {
+      dispatch({
+        type: 'SET_SYNC_STATE',
+        syncState: { status: 'syncing', message: 'Syncing to GitHub…' },
+      })
+      try {
+        await pushDataToGitHub(state.githubSyncConfig, data)
+        dispatch({
+          type: 'SET_SYNC_STATE',
+          syncState: {
+            status: 'success',
+            message: `Synced to ${state.githubSyncConfig.owner}/${state.githubSyncConfig.repo}/${state.githubSyncConfig.path}`,
+            syncedAt: new Date().toISOString(),
+          },
+        })
+      } catch (e: any) {
+        dispatch({
+          type: 'SET_SYNC_STATE',
+          syncState: {
+            status: 'error',
+            message: String(e?.message ?? e),
+            syncedAt: new Date().toISOString(),
+          },
+        })
+        throw e
+      }
+    },
+    [state.data, state.githubSyncConfig],
+  )
+
+  const pullNow = useCallback(async () => {
+    dispatch({
+      type: 'SET_SYNC_STATE',
+      syncState: { status: 'syncing', message: 'Pulling latest JSON from GitHub…' },
+    })
+    try {
+      const data = await pullDataFromGitHub(state.githubSyncConfig)
+      skipAutoSyncRef.current = true
+      dispatch({ type: 'REPLACE_DATA', data })
+      dispatch({
+        type: 'SET_SYNC_STATE',
+        syncState: {
+          status: 'success',
+          message: `Pulled latest data from ${state.githubSyncConfig.owner}/${state.githubSyncConfig.repo}/${state.githubSyncConfig.path}`,
+          syncedAt: new Date().toISOString(),
+        },
+      })
+    } catch (e: any) {
+      dispatch({
+        type: 'SET_SYNC_STATE',
+        syncState: {
+          status: 'error',
+          message: String(e?.message ?? e),
+          syncedAt: new Date().toISOString(),
+        },
+      })
+      throw e
+    }
+  }, [state.githubSyncConfig])
+
+  useEffect(() => {
+    if (initialLoadRef.current) {
+      initialLoadRef.current = false
+      return
+    }
+    if (skipAutoSyncRef.current) {
+      skipAutoSyncRef.current = false
+      return
+    }
+
+    const config = state.githubSyncConfig
+    if (
+      !config.autoSync ||
+      !config.token.trim() ||
+      !config.owner.trim() ||
+      !config.repo.trim() ||
+      !config.branch.trim() ||
+      !config.path.trim()
+    ) {
+      return
+    }
+
+    const timer = window.setTimeout(() => {
+      void pushNow(state.data)
+    }, 900)
+
+    return () => window.clearTimeout(timer)
+  }, [state.data, state.githubSyncConfig, pushNow])
 
   const store: Store = useMemo(() => {
     return {
       state,
       setSelectedDate: (date) => dispatch({ type: 'SET_SELECTED_DATE', date }),
       replaceData: (data) => dispatch({ type: 'REPLACE_DATA', data }),
+      updateGitHubSyncConfig: (config) =>
+        dispatch({ type: 'UPDATE_GITHUB_SYNC_CONFIG', config }),
+      pushToGitHub: () => pushNow(state.data),
+      pullFromGitHub: () => pullNow(),
+      clearSyncMessage: () =>
+        dispatch({
+          type: 'SET_SYNC_STATE',
+          syncState: { status: 'idle', message: '' },
+        }),
 
       addFund: ({ date, amountInr, note }) => {
         const entry: FundEntry = {
@@ -252,7 +396,7 @@ export function AppStoreProvider({ children }: { children: React.ReactNode }) {
           data: { version: 1, funds: [], trades: [], maturities: [] },
         }),
     }
-  }, [state])
+  }, [state, pullNow, pushNow])
 
   return <Ctx.Provider value={store}>{children}</Ctx.Provider>
 }
@@ -262,4 +406,3 @@ export function useAppStore(): Store {
   if (!v) throw new Error('AppStoreProvider missing')
   return v
 }
-

@@ -5,7 +5,14 @@ Responsive web app (mobile-friendly) to manually track:
 - Buy trades with **T+1** settlement
 - Maturity events that **reduce Portfolio value only**
 
-Data is saved locally in your browser (localStorage). Use Settings → Export to back up.
+Data is saved locally in your browser (localStorage). You can also sync the diary JSON to GitHub from Settings by entering:
+- repo owner
+- repo name
+- branch
+- file path such as `data/investment-diary.json`
+- a fine-grained GitHub token with `Contents: Read and write`
+
+Use Settings → Export for an offline backup.
 
 ## Run locally
 ```bash
@@ -25,4 +32,4 @@ Open the URL printed in the terminal.
 - INR only
 - No sell trades (yet)
 - No fees field (per your request)
-
+- GitHub sync keeps a local browser copy too; GitHub acts as the shared JSON backup/source

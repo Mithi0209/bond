@@ -40,6 +40,21 @@ export type AppData = {
   maturities: MaturityEntry[]
 }
 
+export type GitHubSyncConfig = {
+  owner: string
+  repo: string
+  branch: string
+  path: string
+  token: string
+  autoSync: boolean
+}
+
+export type SyncState = {
+  status: 'idle' | 'syncing' | 'success' | 'error'
+  message: string
+  syncedAt?: string
+}
+
 export type DaySnapshot = {
   date: ISODate
   openingWallet: number
@@ -53,4 +68,3 @@ export type DayTimelineItem =
   | { kind: 'TRADE_PLACED'; trade: Trade }
   | { kind: 'SETTLEMENT'; trade: Trade }
   | { kind: 'MATURITY'; entry: MaturityEntry }
-

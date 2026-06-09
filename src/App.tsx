@@ -42,7 +42,7 @@ export default function App() {
             </p>
           </div>
           <div className="hidden md:block text-right text-xs text-emerald-900/70">
-            Data is saved locally in your browser.
+            Local browser copy + optional GitHub JSON sync.
           </div>
         </div>
 
