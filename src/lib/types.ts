@@ -40,15 +40,6 @@ export type AppData = {
   maturities: MaturityEntry[]
 }
 
-export type GitHubSyncConfig = {
-  owner: string
-  repo: string
-  branch: string
-  path: string
-  token: string
-  autoSync: boolean
-}
-
 export type SyncState = {
   status: 'idle' | 'syncing' | 'success' | 'error'
   message: string

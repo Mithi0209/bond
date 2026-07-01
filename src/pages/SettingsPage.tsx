@@ -1,16 +1,16 @@
 import { useRef, useState } from 'react'
-import { Button, Card, TextInput } from '../components/ui'
+import { Button, Card } from '../components/ui'
 import { exportDataJson } from '../lib/storage'
+import { supabaseConfigured } from '../lib/supabase'
 import type { AppData } from '../lib/types'
 import { useAppStore } from '../state/store'
 
 export default function SettingsPage() {
   const {
-    state: { data, githubSyncConfig, syncState },
+    state: { data, syncState },
     replaceData,
-    updateGitHubSyncConfig,
-    pushToGitHub,
-    pullFromGitHub,
+    pushToDatabase,
+    pullFromDatabase,
     seedExample,
     clearAll,
   } = useAppStore()
@@ -53,8 +53,8 @@ export default function SettingsPage() {
       <Card className="p-4">
         <div className="text-sm font-semibold text-emerald-900">Settings</div>
         <div className="mt-1 text-xs text-emerald-900/60">
-          Your diary still keeps a local browser copy, but you can now sync the
-          JSON file to GitHub from here.
+          This app keeps a local browser copy and can also save to a free
+          Supabase database when configured.
         </div>
         {msg ? (
           <div className="mt-3 rounded-lg border border-emerald-100 bg-emerald-50 p-3 text-sm text-emerald-900/80">
@@ -64,67 +64,23 @@ export default function SettingsPage() {
       </Card>
 
       <Card className="p-4">
-        <div className="text-sm font-semibold text-emerald-900">GitHub Sync</div>
+        <div className="text-sm font-semibold text-emerald-900">Database</div>
         <div className="mt-1 text-xs text-emerald-900/60">
-          Store your diary JSON in a repo file like
-          `data/investment-diary.json`. The token is saved only in this browser.
+          For the free database setup, create a Supabase project, run the SQL in
+          `supabase-schema.sql`, then add your `VITE_SUPABASE_URL` and
+          `VITE_SUPABASE_ANON_KEY` to a local `.env` file.
         </div>
 
-        <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
-          <TextInput
-            label="Owner"
-            value={githubSyncConfig.owner}
-            onChange={(e) =>
-              updateGitHubSyncConfig({ owner: e.target.value.trim() })
-            }
-            placeholder="Mithi0209"
-          />
-          <TextInput
-            label="Repo"
-            value={githubSyncConfig.repo}
-            onChange={(e) =>
-              updateGitHubSyncConfig({ repo: e.target.value.trim() })
-            }
-            placeholder="bond"
-          />
-          <TextInput
-            label="Branch"
-            value={githubSyncConfig.branch}
-            onChange={(e) =>
-              updateGitHubSyncConfig({ branch: e.target.value.trim() })
-            }
-            placeholder="main"
-          />
-          <TextInput
-            label="File Path in Repo"
-            value={githubSyncConfig.path}
-            onChange={(e) =>
-              updateGitHubSyncConfig({ path: e.target.value.trim() })
-            }
-            placeholder="data/investment-diary.json"
-          />
+        <div className="mt-4 rounded-lg border border-emerald-100 bg-emerald-50 p-3 text-sm text-emerald-900">
+          <div className="font-semibold">
+            {supabaseConfigured ? 'Supabase config detected' : 'Supabase config missing'}
+          </div>
+          <div className="mt-1 text-sm text-emerald-900/80">
+            {supabaseConfigured
+              ? 'The app can now read and write diary data to the database.'
+              : 'Add your Supabase values to `.env` and restart the app to enable cloud save.'}
+          </div>
         </div>
-
-        <div className="mt-3">
-          <TextInput
-            label="GitHub Token"
-            type="password"
-            value={githubSyncConfig.token}
-            onChange={(e) => updateGitHubSyncConfig({ token: e.target.value })}
-            placeholder="Fine-grained PAT with Contents: Read & Write"
-          />
-        </div>
-
-        <label className="mt-3 flex items-center gap-2 rounded-lg border border-emerald-100 bg-emerald-50 p-3 text-sm text-emerald-900">
-          <input
-            type="checkbox"
-            checked={githubSyncConfig.autoSync}
-            onChange={(e) =>
-              updateGitHubSyncConfig({ autoSync: e.target.checked })
-            }
-          />
-          Auto-sync to GitHub whenever diary data changes
-        </label>
 
         {syncState.message ? (
           <div
@@ -150,28 +106,28 @@ export default function SettingsPage() {
             disabled={syncState.status === 'syncing'}
             onClick={async () => {
               try {
-                await pushToGitHub()
-                setMsg('Pushed current diary JSON to GitHub.')
+                await pushToDatabase()
+                setMsg('Saved current diary to the database.')
               } catch {
-                setMsg('Push failed. See the sync message above.')
+                setMsg('Database save failed. See the sync message above.')
               }
             }}
           >
-            Push to GitHub
+            Save to Database
           </Button>
           <Button
             variant="secondary"
             disabled={syncState.status === 'syncing'}
             onClick={async () => {
               try {
-                await pullFromGitHub()
-                setMsg('Pulled the latest diary JSON from GitHub.')
+                await pullFromDatabase()
+                setMsg('Loaded the latest diary from the database.')
               } catch {
-                setMsg('Pull failed. See the sync message above.')
+                setMsg('Database load failed. See the sync message above.')
               }
             }}
           >
-            Pull from GitHub
+            Load from Database
           </Button>
         </div>
       </Card>

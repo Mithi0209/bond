@@ -1,24 +1,11 @@
-import React, {
-  createContext,
-  useCallback,
-  useContext,
-  useEffect,
-  useMemo,
-  useReducer,
-  useRef,
-} from 'react'
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef } from 'react'
 import { addDaysISO, todayISO } from '../lib/date'
-import { pullDataFromGitHub, pushDataToGitHub } from '../lib/githubSync'
-import {
-  loadData,
-  loadGitHubSyncConfig,
-  saveData,
-  saveGitHubSyncConfig,
-} from '../lib/storage'
+import { isEmptyAppData, pullRemoteData, pushRemoteData } from '../lib/remoteStorage'
+import { loadData, saveData } from '../lib/storage'
+import { supabaseConfigured } from '../lib/supabase'
 import type {
   AppData,
   FundEntry,
-  GitHubSyncConfig,
   ISODate,
   MaturityEntry,
   SyncState,
@@ -28,14 +15,12 @@ import type {
 type AppState = {
   data: AppData
   selectedDate: ISODate
-  githubSyncConfig: GitHubSyncConfig
   syncState: SyncState
 }
 
 type Action =
   | { type: 'SET_SELECTED_DATE'; date: ISODate }
   | { type: 'REPLACE_DATA'; data: AppData }
-  | { type: 'UPDATE_GITHUB_SYNC_CONFIG'; config: Partial<GitHubSyncConfig> }
   | { type: 'SET_SYNC_STATE'; syncState: SyncState }
   | { type: 'ADD_FUND'; entry: FundEntry }
   | { type: 'UPDATE_FUND'; entry: FundEntry }
@@ -61,11 +46,6 @@ function reducer(state: AppState, action: Action): AppState {
       return { ...state, selectedDate: action.date }
     case 'REPLACE_DATA':
       return { ...state, data: action.data }
-    case 'UPDATE_GITHUB_SYNC_CONFIG':
-      return {
-        ...state,
-        githubSyncConfig: { ...state.githubSyncConfig, ...action.config },
-      }
     case 'SET_SYNC_STATE':
       return { ...state, syncState: action.syncState }
     case 'ADD_FUND':
@@ -126,9 +106,8 @@ type Store = {
   state: AppState
   setSelectedDate: (date: ISODate) => void
   replaceData: (data: AppData) => void
-  updateGitHubSyncConfig: (config: Partial<GitHubSyncConfig>) => void
-  pushToGitHub: () => Promise<void>
-  pullFromGitHub: () => Promise<void>
+  pushToDatabase: () => Promise<void>
+  pullFromDatabase: () => Promise<void>
   clearSyncMessage: () => void
 
   addFund: (input: { date: ISODate; amountInr: number; note?: string }) => void
@@ -170,33 +149,42 @@ export function AppStoreProvider({ children }: { children: React.ReactNode }) {
   const [state, dispatch] = useReducer(reducer, {
     data: loadData(),
     selectedDate: todayISO(),
-    githubSyncConfig: loadGitHubSyncConfig(),
     syncState: { status: 'idle', message: '' },
   })
-  const initialLoadRef = useRef(true)
-  const skipAutoSyncRef = useRef(false)
+  const initializedRemoteRef = useRef(false)
+  const skipNextSyncRef = useRef(false)
 
   useEffect(() => {
     saveData(state.data)
   }, [state.data])
 
-  useEffect(() => {
-    saveGitHubSyncConfig(state.githubSyncConfig)
-  }, [state.githubSyncConfig])
-
   const pushNow = useCallback(
     async (data: AppData = state.data) => {
+      if (!supabaseConfigured) {
+        const message =
+          'Database is not configured yet. Add Supabase URL and anon key in your .env file.'
+        dispatch({
+          type: 'SET_SYNC_STATE',
+          syncState: {
+            status: 'error',
+            message,
+            syncedAt: new Date().toISOString(),
+          },
+        })
+        throw new Error(message)
+      }
+
       dispatch({
         type: 'SET_SYNC_STATE',
-        syncState: { status: 'syncing', message: 'Syncing to GitHub…' },
+        syncState: { status: 'syncing', message: 'Saving to database…' },
       })
       try {
-        await pushDataToGitHub(state.githubSyncConfig, data)
+        await pushRemoteData(data)
         dispatch({
           type: 'SET_SYNC_STATE',
           syncState: {
             status: 'success',
-            message: `Synced to ${state.githubSyncConfig.owner}/${state.githubSyncConfig.repo}/${state.githubSyncConfig.path}`,
+            message: 'Saved to Supabase database.',
             syncedAt: new Date().toISOString(),
           },
         })
@@ -212,23 +200,48 @@ export function AppStoreProvider({ children }: { children: React.ReactNode }) {
         throw e
       }
     },
-    [state.data, state.githubSyncConfig],
+    [state.data],
   )
 
   const pullNow = useCallback(async () => {
+    if (!supabaseConfigured) {
+      const message =
+        'Database is not configured yet. Add Supabase URL and anon key in your .env file.'
+      dispatch({
+        type: 'SET_SYNC_STATE',
+        syncState: {
+          status: 'error',
+          message,
+          syncedAt: new Date().toISOString(),
+        },
+      })
+      throw new Error(message)
+    }
+
     dispatch({
       type: 'SET_SYNC_STATE',
-      syncState: { status: 'syncing', message: 'Pulling latest JSON from GitHub…' },
+      syncState: { status: 'syncing', message: 'Loading latest data from database…' },
     })
     try {
-      const data = await pullDataFromGitHub(state.githubSyncConfig)
-      skipAutoSyncRef.current = true
+      const data = await pullRemoteData()
+      if (!data) {
+        dispatch({
+          type: 'SET_SYNC_STATE',
+          syncState: {
+            status: 'success',
+            message: 'Database is connected, but no remote diary exists yet.',
+            syncedAt: new Date().toISOString(),
+          },
+        })
+        return
+      }
+      skipNextSyncRef.current = true
       dispatch({ type: 'REPLACE_DATA', data })
       dispatch({
         type: 'SET_SYNC_STATE',
         syncState: {
           status: 'success',
-          message: `Pulled latest data from ${state.githubSyncConfig.owner}/${state.githubSyncConfig.repo}/${state.githubSyncConfig.path}`,
+          message: 'Loaded latest data from Supabase.',
           syncedAt: new Date().toISOString(),
         },
       })
@@ -243,27 +256,94 @@ export function AppStoreProvider({ children }: { children: React.ReactNode }) {
       })
       throw e
     }
-  }, [state.githubSyncConfig])
+  }, [])
 
   useEffect(() => {
-    if (initialLoadRef.current) {
-      initialLoadRef.current = false
-      return
-    }
-    if (skipAutoSyncRef.current) {
-      skipAutoSyncRef.current = false
+    if (!supabaseConfigured) {
+      dispatch({
+        type: 'SET_SYNC_STATE',
+        syncState: {
+          status: 'idle',
+          message:
+            'Database not configured yet. Add your Supabase URL and anon key to use cloud save.',
+        },
+      })
+      initializedRemoteRef.current = true
       return
     }
 
-    const config = state.githubSyncConfig
-    if (
-      !config.autoSync ||
-      !config.token.trim() ||
-      !config.owner.trim() ||
-      !config.repo.trim() ||
-      !config.branch.trim() ||
-      !config.path.trim()
-    ) {
+    let cancelled = false
+
+    const boot = async () => {
+      dispatch({
+        type: 'SET_SYNC_STATE',
+        syncState: { status: 'syncing', message: 'Connecting to Supabase database…' },
+      })
+
+      try {
+        const remote = await pullRemoteData()
+        if (cancelled) return
+
+        if (remote) {
+          skipNextSyncRef.current = true
+          dispatch({ type: 'REPLACE_DATA', data: remote })
+          dispatch({
+            type: 'SET_SYNC_STATE',
+            syncState: {
+              status: 'success',
+              message: 'Connected to Supabase and loaded your diary.',
+              syncedAt: new Date().toISOString(),
+            },
+          })
+        } else if (!isEmptyAppData(state.data)) {
+          await pushRemoteData(state.data)
+          if (cancelled) return
+          dispatch({
+            type: 'SET_SYNC_STATE',
+            syncState: {
+              status: 'success',
+              message: 'Created the first diary record in Supabase.',
+              syncedAt: new Date().toISOString(),
+            },
+          })
+        } else {
+          dispatch({
+            type: 'SET_SYNC_STATE',
+            syncState: {
+              status: 'success',
+              message: 'Supabase is connected. Your first save will create the diary record.',
+              syncedAt: new Date().toISOString(),
+            },
+          })
+        }
+      } catch (e: any) {
+        if (cancelled) return
+        dispatch({
+          type: 'SET_SYNC_STATE',
+          syncState: {
+            status: 'error',
+            message: String(e?.message ?? e),
+            syncedAt: new Date().toISOString(),
+          },
+        })
+      } finally {
+        initializedRemoteRef.current = true
+      }
+    }
+
+    void boot()
+
+    return () => {
+      cancelled = true
+    }
+    // run only once on mount
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  useEffect(() => {
+    if (!supabaseConfigured || !initializedRemoteRef.current) return
+    if (skipNextSyncRef.current) {
+      skipNextSyncRef.current = false
       return
     }
 
@@ -272,17 +352,15 @@ export function AppStoreProvider({ children }: { children: React.ReactNode }) {
     }, 900)
 
     return () => window.clearTimeout(timer)
-  }, [state.data, state.githubSyncConfig, pushNow])
+  }, [state.data, pushNow])
 
   const store: Store = useMemo(() => {
     return {
       state,
       setSelectedDate: (date) => dispatch({ type: 'SET_SELECTED_DATE', date }),
       replaceData: (data) => dispatch({ type: 'REPLACE_DATA', data }),
-      updateGitHubSyncConfig: (config) =>
-        dispatch({ type: 'UPDATE_GITHUB_SYNC_CONFIG', config }),
-      pushToGitHub: () => pushNow(state.data),
-      pullFromGitHub: () => pullNow(),
+      pushToDatabase: () => pushNow(state.data),
+      pullFromDatabase: () => pullNow(),
       clearSyncMessage: () =>
         dispatch({
           type: 'SET_SYNC_STATE',
